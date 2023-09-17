@@ -10,7 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
  
 from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_normal_
-from timm.models.vision_transformer import _init_vit_weights, _load_weights
+#from timm.models.vision_transformer import _init_vit_weights, _load_weights
+from timm.models.vision_transformer import init_weights_vit_timm, _load_weights
 from timm.models.helpers import build_model_with_cfg, named_apply, adapt_input_conv
 import copy
 
@@ -61,6 +62,7 @@ class Attention(nn.Module):
         return x
 
 
+    
 class Block(nn.Module):
  
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
@@ -167,14 +169,14 @@ class VisionTransformer(nn.Module):
             trunc_normal_(self.dist_token, std=.02)
         if mode.startswith('jax'):
             # leave cls token as zeros to match jax impl
-            named_apply(partial(_init_vit_weights, head_bias=head_bias, jax_impl=True), self)
+            named_apply(partial(init_weights_vit_timm, head_bias=head_bias, jax_impl=True), self)
         else:
             trunc_normal_(self.cls_token, std=.02)
-            self.apply(_init_vit_weights)
+            self.apply(init_weights_vit_timm)
  
     def _init_weights(self, m):
         # this fn left here for compat with downstream users
-        _init_vit_weights(m)
+        init_weights_vit_timm(m)
  
     @torch.jit.ignore()
     def load_pretrained(self, checkpoint_path, prefix=''):
@@ -227,4 +229,41 @@ class VisionTransformer(nn.Module):
  
 
 
+
+def test_attention_block():
+    attention = Attention(dim=64)
+    x = torch.randn(1, 16, 64)  # Batch size of 1, 16 tokens, 64 features
+    output = attention(x)
+    print(output.shape) 
+
+def test_block():
+    # Define the parameters
+    dim = 256
+    num_heads = 8
+    mlp_ratio = 4.0
+    qkv_bias = False
+    drop = 0.1
+    attn_drop = 0.1
+    drop_path = 0.1
+    act_layer = nn.GELU
+    norm_layer = nn.LayerNorm
+    
+    # Initialize the Block
+    block = Block(dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, drop_path, act_layer, norm_layer)
+    
+    # Create a random input tensor (batch_size, sequence_length, dim)
+    x = torch.randn(4, 16, dim)
+    
+    # Pass the input through the Block
+    output = block(x)
+    
+    # Print the output shape
+    print("Output Shape:", output.shape)
+
+
+
+if __name__ == "__main__":
+    test_block()
+    test_attention_block() 
+  
 
