@@ -10,8 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
  
 from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_normal_
-#from timm.models.vision_transformer import _init_vit_weights, _load_weights
-from timm.models.vision_transformer import init_weights_vit_timm, _load_weights
+from timm.models.vision_transformer import _init_vit_weights, _load_weights
+#from timm.models.vision_transformer import init_weights_vit_timm, _load_weights
 from timm.models.helpers import build_model_with_cfg, named_apply, adapt_input_conv
 import copy
 
@@ -169,14 +169,14 @@ class VisionTransformer(nn.Module):
             trunc_normal_(self.dist_token, std=.02)
         if mode.startswith('jax'):
             # leave cls token as zeros to match jax impl
-            named_apply(partial(init_weights_vit_timm, head_bias=head_bias, jax_impl=True), self)
+            named_apply(partial(_init_vit_weights, head_bias=head_bias, jax_impl=True), self)
         else:
             trunc_normal_(self.cls_token, std=.02)
-            self.apply(init_weights_vit_timm)
+            self.apply(_init_vit_weights)
  
     def _init_weights(self, m):
         # this fn left here for compat with downstream users
-        init_weights_vit_timm(m)
+        _init_vit_weights(m)
  
     @torch.jit.ignore()
     def load_pretrained(self, checkpoint_path, prefix=''):
