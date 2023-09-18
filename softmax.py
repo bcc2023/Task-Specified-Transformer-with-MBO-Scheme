@@ -263,35 +263,7 @@ class VisionTransformer(nn.Module):
             x = self.head(x)
         return x
 
-""" 
 
-import unittest
-class TestAttentionModule(unittest.TestCase):
-    def setUp(self):
-        # Set random seed for reproducibility
-        torch.manual_seed(0)
-        
-        # Define parameters
-        self.dim = 256  # Example dimension
-        self.num_heads = 8
-        self.layerth = 1  # Example value for layerth
-
-        # Initialize Attention module
-        self.attention_module = Attention(dim=self.dim, num_heads=self.num_heads, layerth=self.layerth)
-
-    def test_g_conv(self):
-        # Generate random input data
-        B, N, C = 2, 10, 64  # Example batch size, sequence length, and number of channels
-        v = torch.randn(B, C, N)  # v is of shape (B, C, N)
-
-        # Apply the g_conv convolution
-        output = self.attention_module.g_conv(v)
-
-        # Check if output shape is correct
-        self.assertEqual(output.shape, (B, C, N))
-
-if __name__ == '__main__':
-    unittest.main() """
 
 ## when layerth = 0, output shape of x,v
 ##x: torch.Size([1, 16, 64])
@@ -321,22 +293,23 @@ def test_block():
     norm_layer = nn.LayerNorm
     
     # Initialize the Block
-    block = Block(dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, drop_path, act_layer, norm_layer, layerth=1)
+    block = Block(dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, drop_path, act_layer, norm_layer, layerth=3)
     
     # Create a random input tensor (batch_size, sequence_length, dim)
     x = torch.randn(4, 16, dim)
-    
+    v0 = torch.randn(4, 8, 16, 32)  
     # Pass the input through the Block
-    output = block(x)
+    output = block(x,v0)
     
     # Print the output shape
-    print("Output Shape:", output[0].shape)
-    print("Output Shape:", output[1].shape)
+    print("Output Shape:", output.shape)
+
 
 
 if __name__ == "__main__":
-    #test_block()
-    test_attention_block() 
+    test_block()
+    #test_attention_block() 
+
+
 
  """
-
