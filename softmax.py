@@ -16,50 +16,74 @@ from timm.models.helpers import build_model_with_cfg, named_apply, adapt_input_c
 import copy
 
 
- 
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0., proj_drop=0., layerth=None):
         super().__init__()
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
 
-
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
 
-
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+        self.alpha = 0.6
+        self.layerth = layerth
 
-    def forward(self, x):
+        self.dim = dim
+        # self.g_conv = nn.Conv1d(in_channels=1, out_channels=1, kernel_size=1) # let C=1 be dummy variable here
+
+        self.g_conv = nn.Conv1d(in_channels=self.dim//self.num_heads, out_channels=self.dim//self.num_heads, kernel_size=1)
+
+    def forward(self, x, v0=None):
         B, N, C = x.shape
+
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)   # make torchscript happy (cannot use tensor as tuple)
 
-
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
-    
         attn = self.attn_drop(attn)
 
-        x = (attn @ v)
-        x = x.transpose(1, 2).reshape(B,N,C)
-       
+        if self.layerth > 0 :
+            # Initialize an empty list to store the results for each head
+            res_heads = []
+
+            for i in range(self.num_heads):
+                v0_head = v0[:, i, :, :].permute(0,2,1) # since Conv1d accept (B,C,N)
+                v_head = v[:, i, :, :].permute(0,2,1)
+
+                # Calculate res for this head
+                res_head = self.alpha * (self.adjoint_conv(self.g_conv, (v0_head - self.g_conv(v_head)))) 
+                res_head = res_head.permute(0,2,1)  # get the shape back
+                # Append the result for this head to the list
+                res_heads.append(res_head)
+
+            # Concatenate the results along the second dimension (representing the attention heads)
+            res = torch.stack(res_heads, dim=1)
+        else:
+            res = 0
+
+        x = (attn @ v) + res
+        x = x.transpose(1, 2).reshape(B, N, C)
+
         x = self.proj(x)
         x = self.proj_drop(x)
-        
-        ################ COSINE SIMILARITY MEASURE
-        n = x.shape[1] #x is in shape of (batchsize, length, dim)
-        x_norm = torch.norm(x, 2, dim = -1, keepdim= True)
-        x_ = x/x_norm
-        x_cossim = torch.tril((x_ @ x_.transpose(-2, -1)), diagonal= -1).sum(dim = (-1, -2))/(n*(n - 1)/2)
-        x_cossim = x_cossim.mean()
-        import pdb;pdb.set_trace()
-        ################
-       
-        return x
+
+        if self.layerth == 0:
+            return x, v
+        else:
+            return x
+
+
+    def adjoint_conv(self, conv, input):
+        # Reverse the weights and perform convolution
+        reversed_weights = torch.flip(conv.weight, dims=[2])
+        return nn.functional.conv1d(input, reversed_weights, bias=conv.bias, stride=conv.stride, padding=conv.padding, dilation=conv.dilation)
+
+
 
 
     
@@ -70,7 +94,7 @@ class Block(nn.Module):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias,
-                                    attn_drop=attn_drop, proj_drop=drop)
+                                    attn_drop=attn_drop, proj_drop=drop, layerth= layerth)
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
@@ -78,13 +102,20 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
         self.layerth = layerth
  
-    def forward(self, x):
+    def forward(self, x, v0 = None):
 
+        if self.layerth == 0:
+            x_, v0 = self.attn(self.norm1(x))
+        else:
+            x_ = self.attn(self.norm1(x), v0 = v0)
 
-        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(x_)
+        
         x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x
- 
+        if self.layerth == 0:
+            return x, v0
+        else:
+            return x
  
 class VisionTransformer(nn.Module):
     """ Vision Transformer
@@ -136,12 +167,14 @@ class VisionTransformer(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate)
  
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
-        self.blocks = nn.Sequential(*[
+        self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
                 attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, layerth = i)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
+        self.embed_dim = embed_dim
+        self.norm_layer = norm_layer
  
         # Representation layer
         if representation_size and not distilled:
@@ -197,6 +230,8 @@ class VisionTransformer(nn.Module):
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
         if self.num_tokens == 2:
             self.head_dist = nn.Linear(self.embed_dim, self.num_classes) if num_classes > 0 else nn.Identity()
+        self.norm = self.norm_layer(self.embed_dim)
+        
  
     def forward_features(self, x):
         x = self.patch_embed(x)
@@ -206,7 +241,9 @@ class VisionTransformer(nn.Module):
         else:
             x = torch.cat((cls_token, self.dist_token.expand(x.shape[0], -1, -1), x), dim=1)
         x = self.pos_drop(x + self.pos_embed)
-        x = self.blocks(x)
+        x, v0 = self.blocks[0](x)
+        for i in range(1, 11):
+            x = self.blocks[i](x, v0 = v0)
         x = self.norm(x)
         if self.dist_token is None:
             return self.pre_logits(x[:, 0])
@@ -225,16 +262,51 @@ class VisionTransformer(nn.Module):
         else:
             x = self.head(x)
         return x
- 
- 
+
+""" 
+
+import unittest
+class TestAttentionModule(unittest.TestCase):
+    def setUp(self):
+        # Set random seed for reproducibility
+        torch.manual_seed(0)
+        
+        # Define parameters
+        self.dim = 256  # Example dimension
+        self.num_heads = 8
+        self.layerth = 1  # Example value for layerth
+
+        # Initialize Attention module
+        self.attention_module = Attention(dim=self.dim, num_heads=self.num_heads, layerth=self.layerth)
+
+    def test_g_conv(self):
+        # Generate random input data
+        B, N, C = 2, 10, 64  # Example batch size, sequence length, and number of channels
+        v = torch.randn(B, C, N)  # v is of shape (B, C, N)
+
+        # Apply the g_conv convolution
+        output = self.attention_module.g_conv(v)
+
+        # Check if output shape is correct
+        self.assertEqual(output.shape, (B, C, N))
+
+if __name__ == '__main__':
+    unittest.main() """
+
+## when layerth = 0, output shape of x,v
+##x: torch.Size([1, 16, 64])
+##v: torch.Size([1, 8, 16, 8]) shape(B, num_heads, N, C // num_heads)
+# v0 should have a shape of (B, N, C // self.num_heads)
 
 
-
-def test_attention_block():
-    attention = Attention(dim=64)
-    x = torch.randn(1, 16, 64)  # Batch size of 1, 16 tokens, 64 features
+""" def test_attention_block():
+    attention = Attention(dim=64, layerth = 0)
+    x = torch.randn(1,16,64)  # Batch size of 1, 16 tokens, 64 features
+    v0 = torch.randn(1, 8, 16, 8)
     output = attention(x)
-    print(output.shape) 
+    print(output[0].shape) 
+    print(output[1].shape) 
+
 
 def test_block():
     # Define the parameters
@@ -249,7 +321,7 @@ def test_block():
     norm_layer = nn.LayerNorm
     
     # Initialize the Block
-    block = Block(dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, drop_path, act_layer, norm_layer)
+    block = Block(dim, num_heads, mlp_ratio, qkv_bias, drop, attn_drop, drop_path, act_layer, norm_layer, layerth=1)
     
     # Create a random input tensor (batch_size, sequence_length, dim)
     x = torch.randn(4, 16, dim)
@@ -258,12 +330,13 @@ def test_block():
     output = block(x)
     
     # Print the output shape
-    print("Output Shape:", output.shape)
-
+    print("Output Shape:", output[0].shape)
+    print("Output Shape:", output[1].shape)
 
 
 if __name__ == "__main__":
-    test_block()
+    #test_block()
     test_attention_block() 
-  
+
+ """
 
