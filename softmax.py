@@ -1,3 +1,4 @@
+# this version is diffusion + thresholding
 import math
 import logging
 from functools import partial
@@ -188,6 +189,8 @@ class VisionTransformer(nn.Module):
  
         # Classifier head(s)
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+        self.reverse_head = nn.Linear(num_classes, self.embed_dim) if num_classes > 0 else nn.Identity()
+
         self.head_dist = None
         if distilled:
             self.head_dist = nn.Linear(self.embed_dim, self.num_classes) if num_classes > 0 else nn.Identity()
@@ -244,6 +247,9 @@ class VisionTransformer(nn.Module):
         x, v0 = self.blocks[0](x)
         for i in range(1, 11):
             x = self.blocks[i](x, v0 = v0)
+            mid_class_prediction = self.head(self.pre_logits((self.norm(x))[:, 0]))
+            x[:, 0, :] = self.reverse_head(mid_class_prediction)
+
         x = self.norm(x)
         if self.dist_token is None:
             return self.pre_logits(x[:, 0])
