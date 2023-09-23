@@ -1,4 +1,4 @@
-#this version is diffusion only
+# this version is diffusion + thresholding
 import math
 import logging
 from functools import partial
@@ -43,7 +43,6 @@ class Attention(nn.Module):
 
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)   # make torchscript happy (cannot use tensor as tuple)
-        # v shape: (B, self.num_heads, N, C // self.num_heads)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
@@ -58,7 +57,6 @@ class Attention(nn.Module):
             res = self.alpha * (self.adjoint_conv(self.g_conv, (v0_reshape - self.g_conv(v_reshape))))
             res = res.permute(0,2,1) # back to (B*self.num_heads, N, C // self.num_heads)
             res = res.reshape(B, self.num_heads, N, C // self.num_heads)
-
         else:
             res = 0
 
@@ -184,6 +182,8 @@ class VisionTransformer(nn.Module):
  
         # Classifier head(s)
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+        self.reverse_head = nn.Linear(num_classes, self.embed_dim) if num_classes > 0 else nn.Identity()
+
         self.head_dist = None
         if distilled:
             self.head_dist = nn.Linear(self.embed_dim, self.num_classes) if num_classes > 0 else nn.Identity()
@@ -240,6 +240,9 @@ class VisionTransformer(nn.Module):
         x, v0 = self.blocks[0](x)
         for i in range(1, 11):
             x = self.blocks[i](x, v0 = v0)
+            mid_class_prediction = self.head(self.pre_logits((self.norm(x))[:, 0])) # mid_class_prediction shape : batch * num_classes
+            x[:, 0, :] = self.reverse_head(mid_class_prediction)
+
         x = self.norm(x)
         if self.dist_token is None:
             return self.pre_logits(x[:, 0])
@@ -260,7 +263,7 @@ class VisionTransformer(nn.Module):
         return x
 
 
-
+'''
 ## when layerth = 0, output shape of x,v
 ##x: torch.Size([1, 16, 64])
 ##v: torch.Size([1, 8, 16, 8]) shape(B, num_heads, N, C // num_heads)
@@ -276,7 +279,7 @@ def test_attention_block():
     print(output[1].shape) 
     print(torch.sum(output[0]))
     print(torch.sum(output[1]))
-'''
+
 def test_block():
     # Define the parameters
     dim = 256
@@ -300,12 +303,34 @@ def test_block():
     
     # Print the output shape
     print("Output Shape:", output.shape)
-'''
+
+
 
 if __name__ == "__main__":
     torch.manual_seed(1)
-    #test_block()
-    test_attention_block() 
+    from torch.autograd import Variable
+
+    # Create a random input tensor
+    batch_size = 8
+    img_size = 224
+    in_chans = 3
+    input_tensor = Variable(torch.randn(batch_size, in_chans, img_size, img_size))
+
+    # Instantiate the VisionTransformer model
+    model = VisionTransformer(
+        img_size=img_size,
+        in_chans=in_chans,
+        num_classes=1000,
+        embed_dim=768,
+        depth=12,
+        num_heads=12,
+        mlp_ratio=4.
+    )
+
+    output = model(input_tensor)
+
+    print(output.shape)
+'''
 
 
 
